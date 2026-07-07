@@ -1,26 +1,11 @@
-import 'dart:io';
-
 import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 import 'pdf_merge_service.dart';
-
-/// Item de arquivo selecionado pelo usuário.
-class SelectedFile {
-  final File file;
-
-  SelectedFile(this.file);
-
-  String get name => p.basename(file.path);
-  String get sizeLabel {
-    final kb = file.lengthSync() / 1024;
-    if (kb < 1024) return '${kb.toStringAsFixed(0)} KB';
-    return '${(kb / 1024).toStringAsFixed(1)} MB';
-  }
-}
+import 'pdf_source.dart';
+import 'saver.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -30,7 +15,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final List<SelectedFile> _files = [];
+  final List<PdfSource> _files = [];
   bool _dragging = false;
   bool _processing = false;
 
@@ -40,35 +25,51 @@ class _HomePageState extends State<HomePage> {
       type: FileType.custom,
       allowedExtensions: const ['pdf'],
       allowMultiple: true,
+      withData: true,
     );
     if (result == null) return;
-    final added = result.paths
-        .whereType<String>()
-        .map((path) => File(path))
-        .where((f) => f.existsSync())
-        .map(SelectedFile.new);
+    final added = result.files
+        .where((pf) => pf.name.toLowerCase().endsWith('.pdf'))
+        .map(PdfSource.fromPicker);
     _addUnique(added);
     setState(() {});
   }
 
-  void _addUnique(Iterable<SelectedFile> added) {
-    final existing = _files.map((e) => e.file.path).toSet();
+  void _addUnique(Iterable<PdfSource> added) {
+    final existing = _files.toSet();
     for (final f in added) {
-      if (!existing.contains(f.file.path)) {
+      if (!existing.contains(f)) {
         _files.add(f);
-        existing.add(f.file.path);
+        existing.add(f);
       }
     }
   }
 
   void _handleDrop(DropDoneDetails details) async {
-    final added = details.files
-        .where((XFile f) => f.path.toLowerCase().endsWith('.pdf'))
-        .map((f) => File(f.path))
-        .where((f) => f.existsSync())
-        .map(SelectedFile.new);
-    _addUnique(added);
-    setState(() {});
+    final dropped = details.files
+        .where((XFile f) => f.name.toLowerCase().endsWith('.pdf'))
+        .map(PdfSource.fromXFile)
+        .toList();
+
+    setState(() => _files.addAll(dropped));
+
+    // Preenche tamanhos em background e atualiza a UI.
+    for (final src in dropped) {
+      try {
+        final size = await src.readBytes();
+        final idx = _files.indexOf(src);
+        if (idx >= 0 && _files[idx].sizeBytes == null) {
+          _files[idx] = PdfSource(
+            name: src.name,
+            sizeBytes: size.length,
+            read: src.readBytes,
+          );
+          if (mounted) setState(() {});
+        }
+      } catch (_) {
+        // Ignora: não conseguimos medir agora (ex.: web sem bytes).
+      }
+    }
   }
 
   void _move(int from, int to) {
@@ -87,45 +88,25 @@ class _HomePageState extends State<HomePage> {
     setState(() => _files.clear());
   }
 
-  void _sortByName() {
-    final sorted = PdfMergeService.sortByName(
-      _files.map((e) => e.file).toList(),
-    );
-    setState(() {
-      _files
-        ..clear()
-        ..addAll(sorted.map(SelectedFile.new));
-    });
-  }
-
   Future<void> _merge() async {
     if (_files.isEmpty) return;
     setState(() => _processing = true);
 
-    String? outputPath = await FilePicker.platform.saveFile(
-      dialogTitle: 'Salvar PDF unido como',
-      fileName: 'unidos.pdf',
-      type: FileType.custom,
-      allowedExtensions: const ['pdf'],
-    );
-
     try {
-      if (outputPath == null || outputPath.isEmpty) {
-        setState(() => _processing = false);
-        return;
-      }
-
-      final result = await PdfMergeService.merge(
-        files: _files.map((e) => e.file).toList(),
-        outputPath: outputPath,
+      final result = await PdfMergeService.merge(_files);
+      final saved = await saveMergedPdf(
+        result.bytes,
+        PdfMergeService.defaultOutputName(),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Unido: ${result.fileCount} arquivos, ${result.pageCount} páginas.\nSalvo em: ${result.outputPath}',
+            saved
+                ? 'Unido: ${result.fileCount} arquivos, ${result.pageCount} páginas.'
+                : 'Operação cancelada.',
           ),
-          duration: const Duration(seconds: 6),
+          duration: const Duration(seconds: 4),
         ),
       );
     } catch (e) {
@@ -144,11 +125,6 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Unir PDFs'),
         actions: [
-          IconButton(
-            tooltip: 'Ordenar por nome',
-            icon: const Icon(Icons.sort_by_alpha),
-            onPressed: _files.length < 2 ? null : _sortByName,
-          ),
           IconButton(
             tooltip: 'Limpar lista',
             icon: const Icon(Icons.delete_sweep),
@@ -213,7 +189,9 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 8),
             Text(
-              _dragging ? 'Solte os PDFs aqui' : 'Arraste PDFs ou clique para selecionar',
+              _dragging
+                  ? 'Solte os PDFs aqui'
+                  : 'Arraste PDFs ou clique para selecionar',
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 4),
@@ -242,7 +220,7 @@ class _HomePageState extends State<HomePage> {
         itemBuilder: (context, index) {
           final item = _files[index];
           return ListTile(
-            key: ValueKey(item.file.path),
+            key: ValueKey('${item.name}-$index'),
             leading: CircleAvatar(
               backgroundColor: Theme.of(context).colorScheme.primaryContainer,
               foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
@@ -267,7 +245,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 ReorderableDragStartListener(
                   index: index,
-                  child: const Icon(Icons.drag_handle, semanticLabel: 'Arraste'),
+                  child: const Icon(Icons.drag_handle),
                 ),
                 IconButton(
                   tooltip: 'Remover',

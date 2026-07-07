@@ -1,19 +1,19 @@
-import 'dart:io';
 import 'dart:ui';
 
-import 'package:path/path.dart' as p;
 import 'package:syncfusion_flutter_pdf/pdf.dart';
+
+import 'pdf_source.dart';
 
 /// Resultado da operação de união.
 class MergeResult {
-  final String outputPath;
   final int fileCount;
   final int pageCount;
+  final List<int> bytes;
 
   const MergeResult({
-    required this.outputPath,
     required this.fileCount,
     required this.pageCount,
+    required this.bytes,
   });
 }
 
@@ -23,13 +23,10 @@ class MergeResult {
 /// tamanho e a orientação de cada página de origem, copiamos as páginas
 /// por meio de `PdfTemplate` dentro de seções próprias do documento final.
 class PdfMergeService {
-  /// Une os [files] na ordem recebida e salva em [outputPath].
+  /// Une os [files] na ordem recebida e devolve os bytes resultantes.
   ///
   /// Lança [Exception] quando algum arquivo não pode ser lido ou não é PDF.
-  static Future<MergeResult> merge({
-    required List<File> files,
-    required String outputPath,
-  }) async {
+  static Future<MergeResult> merge(List<PdfSource> files) async {
     if (files.isEmpty) {
       throw Exception('Nenhum arquivo selecionado.');
     }
@@ -38,11 +35,9 @@ class PdfMergeService {
     int totalPages = 0;
 
     try {
-      for (final file in files) {
-        if (!file.existsSync()) {
-          throw Exception('Arquivo não encontrado: ${file.path}');
-        }
-        final doc = PdfDocument(inputBytes: await file.readAsBytes());
+      for (final source in files) {
+        final bytes = await source.readBytes();
+        final doc = PdfDocument(inputBytes: bytes);
         try {
           for (var i = 0; i < doc.pages.count; i++) {
             final sourcePage = doc.pages[i];
@@ -62,28 +57,22 @@ class PdfMergeService {
       }
 
       final bytes = finalDoc.saveSync();
-      await File(outputPath).writeAsBytes(bytes);
-
       return MergeResult(
-        outputPath: outputPath,
         fileCount: files.length,
         pageCount: totalPages,
+        bytes: bytes,
       );
     } finally {
       finalDoc.dispose();
     }
   }
 
-  /// Ordena por nome de arquivo (auxiliar).
-  static List<File> sortByName(List<File> files, {bool ascending = true}) {
-    final copy = List<File>.from(files);
-    copy.sort((a, b) {
-      final cmp = p
-          .basename(a.path)
-          .toLowerCase()
-          .compareTo(p.basename(b.path).toLowerCase());
-      return ascending ? cmp : -cmp;
-    });
-    return copy;
+  /// Sugere um nome de arquivo de saída com timestamp.
+  static String defaultOutputName() {
+    final stamp = DateTime.now().toLocal().toIso8601String().replaceAll(
+      RegExp(r'[:T.]'),
+      '-',
+    ).substring(0, 19);
+    return 'unidos_$stamp.pdf';
   }
 }

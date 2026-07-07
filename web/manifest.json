@@ -1,12 +1,12 @@
 {
-    "name": "unir_pdf",
-    "short_name": "unir_pdf",
+    "name": "Unir PDFs",
+    "short_name": "Unir PDFs",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#1565C0",
+    "theme_color": "#1565C0",
+    "description": "Selecione ou arraste arquivos, reordene como quiser e una tudo num PDF só.",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {
